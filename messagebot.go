@@ -7,10 +7,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/http"
+	"os"
 	"strings"
+
+	"github.com/slack-go/slack"
+	"github.com/slack-go/slack/slackevents"
 )
 
 
@@ -79,8 +83,14 @@ type InvitePayload struct {
 	EventContext       string `json:"event_context"`
 }
 
+type ChallengeResponse struct {
+	Challenge string
+}
+
+
 func checkHeader(key string, data string) bool { // Test Written
 	// Create a new HMAC by defining the hash type and the key (as byte array)
+	SigningSecret := os.Getenv("SLACK_SIGNING_SECRET")
 	h := hmac.New(sha256.New, []byte(SigningSecret))
 	// Write Data to it
 	h.Write([]byte(data))
@@ -91,12 +101,46 @@ func checkHeader(key string, data string) bool { // Test Written
 }
 
 func invites(w http.ResponseWriter, r *http.Request) {
+	body, err := ioutil.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		sv, err := slack.NewSecretsVerifier(r.Header, signingSecret)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if _, err := sv.Write(body); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		if err := sv.Ensure(); err != nil {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		eventsAPIEvent, err := slackevents.ParseEvent(json.RawMessage(body), slackevents.OptionNoVerifyToken())
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		if eventsAPIEvent.Type == slackevents.URLVerification {
+			var r *slackevents.ChallengeResponse
+			err := json.Unmarshal([]byte(body), &r)
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "text")
+			w.Write([]byte(r.Challenge))
+		}
 	if r.Method == "GET" {
 		http.Error(w, "GET Method not supported", 400)
 	} else {
 		key := r.Header.Get("X-Slack-Signature")
 
-		body, err := ioutil.ReadAll(r.Body)
+		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			panic(err)
 		}
@@ -118,24 +162,26 @@ func invites(w http.ResponseWriter, r *http.Request) {
 }
 
 // is a value in the array?
-func isValueInList(value string, list []string) bool { // Test Written
-	for _, v := range list {
-		if strings.Contains(v, value) {
-			return true
-		}
-	}
-	return false
-}
+// func isValueInList(value string, list []string) bool { // Test Written
+// 	for _, v := range list {
+// 		if strings.Contains(v, value) {
+// 			return true
+// 		}
+// 	}
+// 	return false
+// }
 
 func getTS(data InvitePayload) string {
 	return data.Event.Message.Ts
 }
 
 func getRequestType(dat InvitePayload) {
+	SlackSecret := os.Getenv("SLACK_SECRET")
+
 	reqBody, err := json.Marshal(dat)
 	var prettyJSON bytes.Buffer
 	_ = json.Indent(&prettyJSON, reqBody, "", "  ")
-	log.Printf("Incoming message: %s\n", string(prettyJSON.Bytes()))
+	log.Printf("Incoming message: %s\n", prettyJSON.String())
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -189,6 +235,9 @@ func getRequestType(dat InvitePayload) {
 			"username":         "InviteBot",
 			"thread_ts":        message_ts,
 		})
+		if err != nil {
+			log.Fatal(err)
+		}
 		req, err := http.NewRequest("POST", reply_url, strings.NewReader(string(reqBody)))
 		if err != nil {
 			log.Fatal(err)
