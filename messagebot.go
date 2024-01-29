@@ -1,10 +1,6 @@
 package main
 
 import (
-	"bytes"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,66 +14,69 @@ import (
 )
 
 
-type InvitePayload struct {
-	Token    string `json:"token"`
-	TeamID   string `json:"team_id"`
-	APIAppID string `json:"api_app_id"`
-	Event    struct {
-		Type    string `json:"type"`
-		Subtype string `json:"subtype"`
-		Hidden  bool   `json:"hidden"`
-		Message struct {
-			BotID  string `json:"bot_id"`
-			Type   string `json:"type"`
-			Text   string `json:"text"`
-			User   string `json:"user"`
-			Team   string `json:"team"`
-			Edited struct {
-				User string `json:"user"`
-				Ts   string `json:"ts"`
-			} `json:"edited"`
-			Attachments []struct {
-				Text string `json:"text"`
-				ID   int    `json:"id,omitempty"`
-			} `json:"attachments"`
-			Ts string `json:"ts"`
-		} `json:"message"`
-		Channel         string `json:"channel"`
-		PreviousMessage struct {
-			BotID       string `json:"bot_id"`
-			Type        string `json:"type"`
-			Text        string `json:"text"`
-			User        string `json:"user"`
-			Ts          string `json:"ts"`
-			Team        string `json:"team"`
-			Attachments []struct {
-				Text       string `json:"text,omitempty"`
-				ID         int    `json:"id"`
-				CallbackID string `json:"callback_id,omitempty"`
-				Fallback   string `json:"fallback,omitempty"`
-				Actions    []struct {
-					ID    string `json:"id"`
-					Name  string `json:"name"`
-					Text  string `json:"text"`
-					Type  string `json:"type"`
-					Value string `json:"value"`
-					Style string `json:"style"`
-				} `json:"actions,omitempty"`
-			} `json:"attachments"`
-		} `json:"previous_message"`
-		EventTs     string `json:"event_ts"`
+type MessageStruct struct {
+	ClientMsgID     string `json:"ClientMsgID"`
+	Type            string `json:"Type"`
+	User            string `json:"User"`
+	Text            string `json:"Text"`
+	ThreadTimeStamp string `json:"ThreadTimeStamp"`
+	TimeStamp       string `json:"TimeStamp"`
+	Channel         string `json:"Channel"`
+	ChannelType     string `json:"ChannelType"`
+	EventTimeStamp  string `json:"EventTimeStamp"`
+	UserTeam        string `json:"UserTeam"`
+	SourceTeam      string `json:"SourceTeam"`
+	Message         string `json:"Message"`
+	PreviousMessage string `json:"PreviousMessage"`
+	Edited          string `json:"Edited"`
+	SubType         string `json:"SubType"`
+	BotID           string `json:"BotID"`
+	Username        string `json:"Username"`
+	Icons           string `json:"Icons"`
+	Upload          bool   `json:"Upload"`
+	Files           []any  `json:"Files"`
+	Attachments     []any  `json:"Attachments"`
+	Root            string `json:"Root"`
+}
+
+type Payload struct {
+	Token               string `json:"token"`
+	TeamID              string `json:"team_id"`
+	ContextTeamID       string `json:"context_team_id"`
+	ContextEnterpriseID any    `json:"context_enterprise_id"`
+	APIAppID            string `json:"api_app_id"`
+	Event               struct {
+		ClientMsgID string `json:"client_msg_id"`
+		Type        string `json:"type"`
+		Text        string `json:"text"`
+		User        string `json:"user"`
 		Ts          string `json:"ts"`
+		Blocks      []struct {
+			Type     string `json:"type"`
+			BlockID  string `json:"block_id"`
+			Elements []struct {
+				Type     string `json:"type"`
+				Elements []struct {
+					Type   string `json:"type"`
+					UserID string `json:"user_id,omitempty"`
+					Text   string `json:"text,omitempty"`
+				} `json:"elements"`
+			} `json:"elements"`
+		} `json:"blocks"`
+		Team        string `json:"team"`
+		Channel     string `json:"channel"`
+		EventTs     string `json:"event_ts"`
 		ChannelType string `json:"channel_type"`
 	} `json:"event"`
 	Type           string `json:"type"`
 	EventID        string `json:"event_id"`
 	EventTime      int    `json:"event_time"`
 	Authorizations []struct {
-		EnterpriseID        interface{} `json:"enterprise_id"`
-		TeamID              string      `json:"team_id"`
-		UserID              string      `json:"user_id"`
-		IsBot               bool        `json:"is_bot"`
-		IsEnterpriseInstall bool        `json:"is_enterprise_install"`
+		EnterpriseID        any    `json:"enterprise_id"`
+		TeamID              string `json:"team_id"`
+		UserID              string `json:"user_id"`
+		IsBot               bool   `json:"is_bot"`
+		IsEnterpriseInstall bool   `json:"is_enterprise_install"`
 	} `json:"authorizations"`
 	IsExtSharedChannel bool   `json:"is_ext_shared_channel"`
 	EventContext       string `json:"event_context"`
@@ -87,153 +86,112 @@ type ChallengeResponse struct {
 	Challenge string
 }
 
-
-func checkHeader(key string, data string) bool { // Test Written
-	// Create a new HMAC by defining the hash type and the key (as byte array)
-	SigningSecret := os.Getenv("SLACK_SIGNING_SECRET")
-	h := hmac.New(sha256.New, []byte(SigningSecret))
-	// Write Data to it
-	h.Write([]byte(data))
-	// Get result and encode as hexadecimal string
-	sha := hex.EncodeToString(h.Sum(nil))
-	comp := fmt.Sprintf("v0=%s", sha)
-	return comp == key
-}
-
 func invites(w http.ResponseWriter, r *http.Request) {
-	body, err := ioutil.ReadAll(r.Body)
-		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		sv, err := slack.NewSecretsVerifier(r.Header, signingSecret)
-		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		if _, err := sv.Write(body); err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		if err := sv.Ensure(); err != nil {
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		eventsAPIEvent, err := slackevents.ParseEvent(json.RawMessage(body), slackevents.OptionNoVerifyToken())
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
+	signingSecret := os.Getenv("SLACK_SIGNING_SECRET")
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+	  fmt.Println(err)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	sv, err := slack.NewSecretsVerifier(r.Header, signingSecret)
+	if err != nil {
+		fmt.Println(err)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	if _, err := sv.Write(body); err != nil {
+		fmt.Println(err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	if err := sv.Ensure(); err != nil {
+		fmt.Println(err)
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	eventsAPIEvent, err := slackevents.ParseEvent(json.RawMessage(body), slackevents.OptionNoVerifyToken())
+	if err != nil {
+		fmt.Println(err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 
-		if eventsAPIEvent.Type == slackevents.URLVerification {
-			var r *slackevents.ChallengeResponse
-			err := json.Unmarshal([]byte(body), &r)
-			if err != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-				return
-			}
-			w.Header().Set("Content-Type", "text")
-			w.Write([]byte(r.Challenge))
+	// respond to a challenge.
+	if eventsAPIEvent.Type == slackevents.URLVerification {
+		var r *slackevents.ChallengeResponse
+		err := json.Unmarshal([]byte(body), &r)
+		if err != nil {
+			fmt.Println(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
 		}
+		w.Header().Set("Content-Type", "text")
+		w.Write([]byte(r.Challenge))
+	}
+
+	if eventsAPIEvent.InnerEvent.Type == "message" {
+			var pay = Payload{}
+			err := json.Unmarshal(body, &pay)
+			if err != nil {
+				fmt.Println(err)
+			}
+			msgText := pay.Event.Text
+			if strings.Contains(msgText, "?") || strings.Contains(msgText, "help") || strings.Contains(msgText, "Help") {
+				log.Printf("Help Requested: %s", msgText)
+			}
+
+			if strings.Contains(msgText, "requested to invite") || strings.Contains(msgText, "requested to invite") {
+				handleInvite(pay)
+
+			}
+	}
 	if r.Method == "GET" {
 		http.Error(w, "GET Method not supported", 400)
-	} else {
-		key := r.Header.Get("X-Slack-Signature")
-
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			panic(err)
-		}
-		timestamp := r.Header.Get("X-Slack-Request-Timestamp")
-		var pay = InvitePayload{}
-		err = json.Unmarshal(body, &pay)
-		if err != nil {
-			panic(err)
-		}
-		signedData := fmt.Sprintf("v0:%s:%s", timestamp, string(body))
-		if !checkHeader(key, signedData) {
-			fmt.Println("Check Header Failed.")
-		 	w.WriteHeader(400)
-		 	return
-		}
+	}  else {
 		w.WriteHeader(200)
-		getRequestType(pay)
 	}
 }
 
-// is a value in the array?
-// func isValueInList(value string, list []string) bool { // Test Written
-// 	for _, v := range list {
-// 		if strings.Contains(v, value) {
-// 			return true
-// 		}
-// 	}
-// 	return false
-// }
 
-func getTS(data InvitePayload) string {
-	return data.Event.Message.Ts
-}
-
-func getRequestType(dat InvitePayload) {
-	SlackSecret := os.Getenv("SLACK_SECRET")
-
-	reqBody, err := json.Marshal(dat)
-	var prettyJSON bytes.Buffer
-	_ = json.Indent(&prettyJSON, reqBody, "", "  ")
-	log.Printf("Incoming message: %s\n", prettyJSON.String())
+func handleInvite(data Payload) {
+	apiToken := os.Getenv("SLACK_SECRET")
+	var final_msg = ":avocado-heart: Sorry, <@" + data.Event.User + ">, but direct invites are not allowed in this Slack. All members must go through the application process at: https://devrelcollective.fun We appreciate your understanding."
+	// 	var ts = getTS(dat)
+	reply_url := "https://slack.com/api/chat.postMessage"
+	reqBody, err := json.Marshal(map[string]string{
+		"channel":          data.Event.User,
+		"replace_original": "false",
+		"text":             final_msg,
+		"username":         "InviteBot",
+		"as_user":          "true",
+		"message_ts":       data.Event.Ts,
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
-	if strings.Contains(dat.Event.Message.Text, "?") || strings.Contains(dat.Event.Message.Text, "help") || strings.Contains(dat.Event.Message.Text, "Help") {
-		log.Printf("Help Requested: %s", dat.Event.Message.Text)
+	var DefaultClient = &http.Client{}
+	request, err := http.NewRequest("POST", reply_url, strings.NewReader(string(reqBody)))
+	if err != nil {
+		log.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer " + apiToken)
+	request.Header.Set("Accept", "application/json")
+	res, err := DefaultClient.Do(request)
+	if err != nil {
+		log.Fatal(err)
 	}
 
-	if strings.Contains(dat.Event.Message.Text, "requested to invite") {
-		var prettyJSON bytes.Buffer
-		_ = json.Indent(&prettyJSON, reqBody, "", "  ")
-		// log.Println(string(prettyJSON.Bytes()))
-		sender := dat.Event.Message.Text[strings.Index(dat.Event.Message.Text, "@")+1 : strings.Index(dat.Event.Message.Text, ">")]
-		final_msg := ":avocado-heart: Sorry, direct invites are not allowed in this Slack. All members must go through the application process at: https://devrelcollective.fun"
-		var ts = getTS(dat)
-		reply_url := "https://slack.com/api/chat.postMessage"
-		fmt.Println(reply_url)
+	if res.StatusCode != 200 {
+		log. Fatal(res.StatusCode)
+	}
 		reqBody, err = json.Marshal(map[string]string{
-			"channel":          sender,
-			"replace_original": "false",
-			"text":             final_msg,
-			"username":         "InviteBot",
-			"as_user":          "true",
-			"message_ts":       ts,
-		})
-		if err != nil {
-			log.Fatal(err)
-		}
-		var DefaultClient = &http.Client{}
-		request, err := http.NewRequest("POST", reply_url, strings.NewReader(string(reqBody)))
-		if err != nil {
-			log.Fatal(err)
-		}
-		request.Header.Set("Content-Type", "application/json")
-		request.Header.Set("Authorization", "Bearer " + SlackSecret)
-		request.Header.Set("Accept", "application/json")
-		res, err := DefaultClient.Do(request)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		if res.StatusCode != 200 {
-			log. Fatal(res.StatusCode)
-		}
-		message_ts := getTS(dat)
-		channel := dat.Event.Channel
-		reply_url = "https://slack.com/api/chat.postMessage"
-		reqBody, err = json.Marshal(map[string]string{
-			"channel":          channel,
+			"channel":          "G0A7K9GPN",
 			"replace_original": "true",
 			"text":             ":avocado-heart: InviteBot Handled this via DM",
 			"username":         "InviteBot",
-			"thread_ts":        message_ts,
+			"thread_ts":        data.Event.EventTs,
 		})
 		if err != nil {
 			log.Fatal(err)
@@ -243,7 +201,7 @@ func getRequestType(dat InvitePayload) {
 			log.Fatal(err)
 		}
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+SlackSecret)
+		req.Header.Set("Authorization", "Bearer "+apiToken)
 		req.Header.Set("Accept", "application/json")
 		res, err = DefaultClient.Do(req)
 		if err != nil {
@@ -253,15 +211,13 @@ func getRequestType(dat InvitePayload) {
 		if res.StatusCode != 200 {
 			log. Fatal(res.StatusCode)
 		}
-	}
-
 }
 
 func main() {
 	fmt.Println("starting ... ")
-	http.HandleFunc("/invites", invites)
+	http.HandleFunc("/", invites)
 
-	err := http.ListenAndServeTLS(":9932", "/home/davidgs/.node-red/combined", "/home/davidgs/.node-red/combined", nil) // set listen port
+	err := http.ListenAndServe(":3333", nil)
 	if err != nil {
 		log.Fatal("ListenAndServeTLS: ", err)
 	}
