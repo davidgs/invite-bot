@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -13,6 +12,70 @@ import (
 	"github.com/slack-go/slack/slackevents"
 )
 
+type InvitePayload struct {
+	Token    string `json:"token"`
+	TeamID   string `json:"team_id"`
+	APIAppID string `json:"api_app_id"`
+	Event    struct {
+		Type    string `json:"type"`
+		Subtype string `json:"subtype"`
+		Hidden  bool   `json:"hidden"`
+		Message struct {
+			BotID  string `json:"bot_id"`
+			Type   string `json:"type"`
+			Text   string `json:"text"`
+			User   string `json:"user"`
+			Team   string `json:"team"`
+			Edited struct {
+				User string `json:"user"`
+				Ts   string `json:"ts"`
+			} `json:"edited"`
+			Attachments []struct {
+				Text string `json:"text"`
+				ID   int    `json:"id,omitempty"`
+			} `json:"attachments"`
+			Ts string `json:"ts"`
+		} `json:"message"`
+		Channel         string `json:"channel"`
+		PreviousMessage struct {
+			BotID       string `json:"bot_id"`
+			Type        string `json:"type"`
+			Text        string `json:"text"`
+			User        string `json:"user"`
+			Ts          string `json:"ts"`
+			Team        string `json:"team"`
+			Attachments []struct {
+				Text       string `json:"text,omitempty"`
+				ID         int    `json:"id"`
+				CallbackID string `json:"callback_id,omitempty"`
+				Fallback   string `json:"fallback,omitempty"`
+				Actions    []struct {
+					ID    string `json:"id"`
+					Name  string `json:"name"`
+					Text  string `json:"text"`
+					Type  string `json:"type"`
+					Value string `json:"value"`
+					Style string `json:"style"`
+				} `json:"actions,omitempty"`
+			} `json:"attachments"`
+		} `json:"previous_message"`
+		EventTs     string `json:"event_ts"`
+		Ts          string `json:"ts"`
+		ChannelType string `json:"channel_type"`
+	} `json:"event"`
+	Type           string `json:"type"`
+	EventID        string `json:"event_id"`
+	EventTime      int    `json:"event_time"`
+	Authorizations []struct {
+		EnterpriseID        interface{} `json:"enterprise_id"`
+		TeamID              string      `json:"team_id"`
+		UserID              string      `json:"user_id"`
+		IsBot               bool        `json:"is_bot"`
+		IsEnterpriseInstall bool        `json:"is_enterprise_install"`
+	} `json:"authorizations"`
+	IsExtSharedChannel bool   `json:"is_ext_shared_channel"`
+	EventContext       string `json:"event_context"`
+}
 
 type MessageStruct struct {
 	ClientMsgID     string `json:"ClientMsgID"`
@@ -82,6 +145,7 @@ type Payload struct {
 	EventContext       string `json:"event_context"`
 }
 
+
 type ChallengeResponse struct {
 	Challenge string
 }
@@ -90,58 +154,89 @@ func invites(w http.ResponseWriter, r *http.Request) {
 	signingSecret := os.Getenv("SLACK_SIGNING_SECRET")
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-	  fmt.Println(err)
+	  log.Println(err)
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 	sv, err := slack.NewSecretsVerifier(r.Header, signingSecret)
 	if err != nil {
-		fmt.Println(err)
+		log.Println(err)
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 	if _, err := sv.Write(body); err != nil {
-		fmt.Println(err)
+		log.Println(err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 	if err := sv.Ensure(); err != nil {
-		fmt.Println(err)
+		log.Println(err)
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
+	msgT := InvitePayload{}
+	err = json.Unmarshal([]byte(body), &msgT)
+	if err != nil {
+		log.Println(err)
+	}
+	output, err := json.MarshalIndent(msgT, "", "   ")
+	if err != nil {
+		log.Println(err)
+	}
+	log.Println("InvitePayload", string(output))
 	eventsAPIEvent, err := slackevents.ParseEvent(json.RawMessage(body), slackevents.OptionNoVerifyToken())
 	if err != nil {
-		fmt.Println(err)
+		log.Println(err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-
+	eventsAPICallbackEvent, err := slackevents.ParseEvent(json.RawMessage(body), slackevents.OptionNoVerifyToken())
+	if err != nil {
+		log.Println(err)
+	}
+	log.Println("Type: ", eventsAPIEvent.Type)
+	log.Println("SubType: ", eventsAPIEvent.SubType)
+	log.Println("APICallbackEventType: ", eventsAPICallbackEvent.Type)
 	// respond to a challenge.
 	if eventsAPIEvent.Type == slackevents.URLVerification {
 		var r *slackevents.ChallengeResponse
 		err := json.Unmarshal([]byte(body), &r)
 		if err != nil {
-			fmt.Println(err)
+			log.Println(err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "text")
 		w.Write([]byte(r.Challenge))
 	}
-
+	log.Println("InnerEvent: ", eventsAPIEvent.InnerEvent.Type)
 	if eventsAPIEvent.InnerEvent.Type == "message" {
+		  var p2 = slackevents.MessageEvent{}
 			var pay = Payload{}
 			err := json.Unmarshal(body, &pay)
 			if err != nil {
-				fmt.Println(err)
+				log.Println(err)
+			}
+			err = json.Unmarshal(body, &p2)
+			if err != nil {
+				log.Println(err)
 			}
 			msgText := pay.Event.Text
+			msgID := pay.EventID
+			log.Println(msgID)
+			log.Printf("Incoming Message: %s\n", msgText)
 			if strings.Contains(msgText, "?") || strings.Contains(msgText, "help") || strings.Contains(msgText, "Help") {
 				log.Printf("Help Requested: %s", msgText)
 			}
-
-			if strings.Contains(msgText, "requested to invite") || strings.Contains(msgText, "requested to invite") {
+			if p2.Attachments != nil {
+				a0 := p2.Attachments[0].Text
+				if strings.Contains(a0, "denied this request") {
+					log.Println(a0)
+					handleInvite(pay)
+				}
+			}
+			if strings.Contains(msgText, "denied this request") {
+				log.Printf("Denied %s\n", pay)
 				handleInvite(pay)
 
 			}
@@ -184,7 +279,7 @@ func handleInvite(data Payload) {
 	}
 
 	if res.StatusCode != 200 {
-		log. Fatal(res.StatusCode)
+		log.Fatal(res.StatusCode)
 	}
 		reqBody, err = json.Marshal(map[string]string{
 			"channel":          "G0A7K9GPN",
@@ -209,16 +304,25 @@ func handleInvite(data Payload) {
 		}
 
 		if res.StatusCode != 200 {
-			log. Fatal(res.StatusCode)
+			log.Fatal(res.StatusCode)
 		}
 }
 
 func main() {
-	fmt.Println("starting ... ")
+	f, err := os.OpenFile("/var/log/invitebot.log", os.O_RDWR | os.O_CREATE | os.O_APPEND, 0666)
+	if err != nil {
+    log.Fatalf("error opening file: %v", err)
+	}
+	defer f.Close()
+
+	log.SetOutput(f)
+	log.SetFlags(log.Lshortfile)
+	log.Println("starting ... ")
 	http.HandleFunc("/", invites)
 
-	err := http.ListenAndServe(":3333", nil)
+	err = http.ListenAndServe(":3333", nil)
 	if err != nil {
 		log.Fatal("ListenAndServeTLS: ", err)
 	}
+	log.Println("Server up and running on port 3333")
 }
