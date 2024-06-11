@@ -151,6 +151,7 @@ type ChallengeResponse struct {
 }
 
 func invites(w http.ResponseWriter, r *http.Request) {
+	// We use this to verify messages come from Slack and only Slack
 	signingSecret := os.Getenv("SLACK_SIGNING_SECRET")
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -158,6 +159,7 @@ func invites(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
+	// This is all to verify the message ...
 	sv, err := slack.NewSecretsVerifier(r.Header, signingSecret)
 	if err != nil {
 		log.Println(err)
@@ -174,16 +176,19 @@ func invites(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
+	// If we got here, the message is validated. Now we can parse it
 	msgT := InvitePayload{}
 	err = json.Unmarshal([]byte(body), &msgT)
 	if err != nil {
 		log.Println(err)
 	}
+	// Make the debug output readable.
 	output, err := json.MarshalIndent(msgT, "", "   ")
 	if err != nil {
 		log.Println(err)
 	}
 	log.Println("InvitePayload", string(output))
+	// Slack suggests that this is the way. I remain unconvinced.
 	eventsAPIEvent, err := slackevents.ParseEvent(json.RawMessage(body), slackevents.OptionNoVerifyToken())
 	if err != nil {
 		log.Println(err)
@@ -195,9 +200,9 @@ func invites(w http.ResponseWriter, r *http.Request) {
 		log.Println(err)
 	}
 	log.Println("Type: ", eventsAPIEvent.Type)
-	log.Println("SubType: ", eventsAPIEvent.SubType)
+	log.Println("SubType: ", msgT.Event.Subtype)
 	log.Println("APICallbackEventType: ", eventsAPICallbackEvent.Type)
-	// respond to a challenge.
+	// respond to a challenge. This only ever happens when you change the server URL
 	if eventsAPIEvent.Type == slackevents.URLVerification {
 		var r *slackevents.ChallengeResponse
 		err := json.Unmarshal([]byte(body), &r)
@@ -209,37 +214,22 @@ func invites(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text")
 		w.Write([]byte(r.Challenge))
 	}
+	// the inner event is 'message_changed' when we respond to an invite request. Among other things.
+	// `message_changed` subtypes have attachements, which is what we need to inspect.
 	log.Println("InnerEvent: ", eventsAPIEvent.InnerEvent.Type)
-	if eventsAPIEvent.InnerEvent.Type == "message" {
-		  var p2 = slackevents.MessageEvent{}
-			var pay = Payload{}
-			err := json.Unmarshal(body, &pay)
-			if err != nil {
-				log.Println(err)
-			}
-			err = json.Unmarshal(body, &p2)
-			if err != nil {
-				log.Println(err)
-			}
-			msgText := pay.Event.Text
-			msgID := pay.EventID
-			log.Println(msgID)
-			log.Printf("Incoming Message: %s\n", msgText)
-			if strings.Contains(msgText, "?") || strings.Contains(msgText, "help") || strings.Contains(msgText, "Help") {
-				log.Printf("Help Requested: %s", msgText)
-			}
-			if p2.Attachments != nil {
-				a0 := p2.Attachments[0].Text
-				if strings.Contains(a0, "denied this request") {
-					log.Println(a0)
-					handleInvite(pay)
+	if eventsAPIEvent.InnerEvent.Type == "message" &&  msgT.Event.Subtype == "message_changed" {
+			attachments := msgT.Event.Message.Attachments
+			for k, v := range attachments {
+				// Ah hah! A dictator denied the request. We must respond.
+				if strings.Contains(v.Text, "denied this request") {
+					log.Println("Attachment: ", k, v.Text) // just some debug output
+					// We need to respond to the user who requested the invite.
+					handleInvite(msgT)
 				}
 			}
-			if strings.Contains(msgText, "denied this request") {
-				log.Printf("Denied %s\n", pay)
-				handleInvite(pay)
-
-			}
+			// if strings.Contains(msgText, "?") || strings.Contains(msgText, "help") || strings.Contains(msgText, "Help") {
+			// 	log.Printf("Help Requested: %s", msgText)
+			// }
 	}
 	if r.Method == "GET" {
 		http.Error(w, "GET Method not supported", 400)
@@ -249,18 +239,23 @@ func invites(w http.ResponseWriter, r *http.Request) {
 }
 
 
-func handleInvite(data Payload) {
+func handleInvite(data InvitePayload) {
+	botToken := os.Getenv("SLACK_BOT_SECRET")
 	apiToken := os.Getenv("SLACK_SECRET")
-	var final_msg = ":avocado-heart: Sorry, <@" + data.Event.User + ">, but direct invites are not allowed in this Slack. All members must go through the application process at: https://devrelcollective.fun We appreciate your understanding."
+	// get the username
+	username := strings.Split(data.Event.Message.Text, " ")[0]
+	thread := data.Event.Message.Ts
+	var final_msg = ":avocado-heart: Sorry, " + username + ", but direct invites are not allowed in this Slack. All members must go through the application process at: https://devrelcollective.fun We appreciate your understanding."
 	// 	var ts = getTS(dat)
+	log.Println("Final Message: ", final_msg)
 	reply_url := "https://slack.com/api/chat.postMessage"
 	reqBody, err := json.Marshal(map[string]string{
-		"channel":          data.Event.User,
+		"channel":          username,
 		"replace_original": "false",
 		"text":             final_msg,
 		"username":         "InviteBot",
 		"as_user":          "true",
-		"message_ts":       data.Event.Ts,
+		"message_ts":       thread,
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -271,7 +266,7 @@ func handleInvite(data Payload) {
 		log.Fatal(err)
 	}
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Authorization", "Bearer " + apiToken)
+	request.Header.Set("Authorization", "Bearer " + botToken)
 	request.Header.Set("Accept", "application/json")
 	res, err := DefaultClient.Do(request)
 	if err != nil {
@@ -281,31 +276,31 @@ func handleInvite(data Payload) {
 	if res.StatusCode != 200 {
 		log.Fatal(res.StatusCode)
 	}
-		reqBody, err = json.Marshal(map[string]string{
-			"channel":          "G0A7K9GPN",
-			"replace_original": "true",
-			"text":             ":avocado-heart: InviteBot Handled this via DM",
-			"username":         "InviteBot",
-			"thread_ts":        data.Event.EventTs,
-		})
-		if err != nil {
-			log.Fatal(err)
-		}
-		req, err := http.NewRequest("POST", reply_url, strings.NewReader(string(reqBody)))
-		if err != nil {
-			log.Fatal(err)
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+apiToken)
-		req.Header.Set("Accept", "application/json")
-		res, err = DefaultClient.Do(req)
-		if err != nil {
-			log.Fatal(err)
-		}
+	reqBody, err = json.Marshal(map[string]string{
+		"channel":          "G0A7K9GPN",
+		"replace_original": "true",
+		"text":             ":avocado-heart: InviteBot Handled this via DM",
+		"username":         "InviteBot",
+		"thread_ts":        thread,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	req, err := http.NewRequest("POST", reply_url, strings.NewReader(string(reqBody)))
+	if err != nil {
+		log.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer " + apiToken)
+	req.Header.Set("Accept", "application/json")
+	res, err = DefaultClient.Do(req)
+	if err != nil {
+		log.Fatal(err)
+	}
 
-		if res.StatusCode != 200 {
-			log.Fatal(res.StatusCode)
-		}
+	if res.StatusCode != 200 {
+		log.Fatal(res.StatusCode)
+	}
 }
 
 func main() {
